@@ -1,4 +1,4 @@
-# R code to reproduce the analysis to estimate wolf population size 
+# R code to reproduce the analysis used to estimate wolf population size in France in the winter 2024/25
 # Milleret, C., Duchamp, D., Vandel, JM., Gimenez, O. 2025. Mise à jour des estimations démographiques et des effectifs de la population de loups en France lors de l’hiver 2024/25. OFB/CEFE-CNRS. XX pages. Disponible sur : <https:/ www.loupfrance.fr/>
 rm(list=ls())
 #LOAD PACKAGES
@@ -13,7 +13,6 @@ library(basicMCMCplots)
 library(coda)
 library(tidyverse)
 library(RANN)
-
 library(readxl)
 
 ## WORKING DIRECTORY & MODEL NAME
@@ -56,25 +55,25 @@ sourceDirectory(file.path(WD,"Functions"), modifiedOnly = FALSE)
 
 
 ## ==== 1. LOAD DATA ####
-## ====  1.1 DNA DATA ####
-## ====   1.1.1 ALIVE DATA ####
+## ====   1.1 DNA DATA ####
+## ====     1.1.1 ALIVE DATA ####
 load(file.path(WD,"2025/Data/DNA.RData"))
 write.csv(DNA,file = file.path(WD,"2025/Data/DNA.csv"))
 
-## ====  1.2 GIS DATA ####
-## ====   1.2.1 10*10 km SAMPLING GRID #####
+## ====   1.2 GIS DATA ####
+## ====     1.2.1 10*10 km SAMPLING GRID #####
 grid1010 <- read_sf(file.path(WD,"2025/Data/","plan_echantillonnage_reg_2024-2025.shp"))
 grid1010 <- grid1010[!is.na(grid1010$Meute), ]
 
 st_crs(DNA) <- st_crs(grid1010)
 plot(grid1010$geometry)
 
-## ====   1.2.2 EUROPE ####
+## ====     1.2.2 EUROPE ####
 Europe <- read_sf(file.path(WD,"GISLayers","EuropeCountries"))
 ##subset to neighboring countries 
 Europe <- Europe[Europe$NAME %in%c("France","Spain","Italy","Switzerland","Germany","Luxembourg","Belgium","Andorra","Monaco"),]
 Europe <- st_transform(Europe,crs = st_crs(DNA))
-## ====   1.2.3 FRANCE ####
+## ====     1.2.3 FRANCE ####
 France <- Europe[Europe$NAME %in%c("France"),]
 France <- st_transform(France,crs = st_crs(DNA))
 ##REMOVE ALL ISLANDS 
@@ -90,13 +89,13 @@ France = parts |>
 plot(France$geometry)
 plot(DNA$geometry,add=T,col="red")
 
-## ====   1.2.4 DEPARTEMENT #####
+## ====     1.2.4 DEPARTEMENT #####
 Departement <- read_sf(file.path(WD,"GISLayers","departements-20180101-shp","departements-20180101.shp"))
 Departement <- st_transform(Departement,crs = st_crs(DNA))
 
 plot(Departement$geometry,add=T)
 
-## ====   1.2.5 REGION #####
+## ====     1.2.5 REGION #####
 Region <- read_sf(file.path(WD,"GISLayers","Region","regions_2015_metropole_region.shp"))
 Region <- st_set_crs(Region, 27572)#required to fix the issue with the projection
 Region <- st_transform(Region,crs = st_crs(DNA))
@@ -104,7 +103,7 @@ Region <- st_transform(Region,crs = st_crs(DNA))
 plot(Region$geometry,add=T,col="red")
 
 
-## ====   1.2.6 COMMUNES #####
+## ====     1.2.6 COMMUNES #####
 Communes <- read_sf(file.path(myVars$WD,"GIS","AdminBoundaries","Communes20220101","communes-20220101FR.shp"))
 CommunesOriginal <- Communes <- st_transform(Communes, crs = st_crs(DNA))
 Communes <- st_crop( Communes, st_buffer(France,dist = 20000)$geometry)
@@ -112,18 +111,7 @@ Communes <- st_simplify(Communes, preserveTopology = T, dTolerance = 200)
 #CHECK IF THERE IS AN ISSUE WITH THE GEOMETRY
 any(sf::st_is_empty(Communes))
 
-## ====   1.2.7 DEM  #####
-#dem was downloaded from elevatr::get_elev_raster
-DEM <- raster(file.path(myVars$WD,"GIS","DEM","DEM.tif"))
-# dem <- crop(DEM,st_buffer(France,dist = 80000))
-#use focal to get an approx 10km resolution 
-DEM <- raster::focal(DEM,w=matrix(1,nrow=11,ncol=11),fun=mean, na.rm=T, pad=T)
-# DEM1 <- st_as_stars(DEM)
-# carmel_mean15 = focal2(carmel, matrix(1, 15, 15), "mean")
-plot(DEM)
-plot(France$geometry,add=T)
-
-## ====   1.2.8 LCIE WOLF DISTRIBUTION #####
+## ====     1.2.7 LCIE WOLF DISTRIBUTION #####
 #2023 DISTRIBUTION MAP 
 LCIEDistribution2023 <- read_sf(file.path(WD,"GISLayers","LCIE_wolfDistribution","Wolf_LCIE_2023","Wolf_2017-2022_LCIE.shp"))
 LCIEDistribution2023$PRESENCE1 <- 0
@@ -148,48 +136,50 @@ LCIEDistribution2018 <- st_transform(LCIEDistribution2018, crs=st_crs(DNA))
 LCIEDistribution2023 <- st_transform(LCIEDistribution2023, crs=st_crs(DNA))
 
 
-## ====   1.2.7 EFFORT #####
-## ====     1.2.7.1 POTENTIAL Bauduin et al 2023 #####
-#LOAD GRID
+## ====     1.2.8 EFFORT #####
+#LOAD
 load(file.path(WD,"2025","Data","Effort.RData"))
+plot(CommunesBillGEACODNA["nAllDNA"])
 
-## ====   1.2.10 SNOW #####
+## ====     1.2.9 SNOW #####
 load(file.path(WD,"2025/Data/SNOW.RData"))
 plot(SNOW)
 
 
 
 
-## ====   1.2.12 ROAD DENSITY #####
+## ====     1.2.10 ROAD DENSITY #####
 load(file.path(WD,"GISLayers/roads.RData"))
 
 
-## ====   1.2.13 FOREST #####
+## ====     1.2.11 Corine Land Cover #####
 #Corinne land cover data should be downloaded https://land.copernicus.eu/en/products/corine-land-cover
-#Layers are not provided given their size 
-#CLC CLIPPED TO FRANCE IN QGIS
+#Original layers are not provided given their size 
+#Only final layers are provided in 4.6
+# CLC layer CLIPPED TO FRANCE IN QGIS
 # CLC_FR <- st_read(file.path("C:/Personal_Cloud/OneDrive/Work/CNRS/SCR","GIS","CLC","u2018_clc2018_v2020_20u1_fgdb","CLC_FR.shp"))
+# ## ====     1.2.11.1 Forest #####
 #CLCForest <- CLC_FR[CLC_FR$Code_18 %in% c("311", "312", "313"),]#,"324
-# ## ====   1.2.12 GRASSLAND #####
+# ## ====     1.2.11.2 GRASSLAND #####
 # CLCGrassland <- CLC_FR[CLC_FR$Code_18 %in% c("321", "322" ),]
-## ====   1.2.15 Agriculture #####
+## ====       1.2.11.3 Agriculture #####
 #CLCAgri <- CLC_FR[as.numeric(CLC_FR$Code_18)  >199 &
 #                    as.numeric(CLC_FR$Code_18)  <300,]
-## ====   1.2.16 Human #####
+## ====       1.2.11.4 Human #####
 # CLCHum <- CLC_FR[as.numeric(CLC_FR$Code_18)  >99 &
 #                    as.numeric(CLC_FR$Code_18)  <200,]
 
-## ====   1.2.14 AIRE DE PRESENCE ====
+## ====     1.2.12 AIRE DE PRESENCE ====
 AirePresence <- read_sf(file.path(WD,"GISLayers","AirePresenceFR",
                                   "Massif_France_Mailles_Reg_Sce_2_2.shp"))
 
-## ==== 2. Check NGS DATA ####
+## ==== 2. CHECK NGS DATA ####
 barplot(table(DNA$Year))
 table(DNA$mois,DNA$Year)
 NDet <- tapply(DNA$Id, DNA$Id, length)
 mean(NDet)
 
-## ====     2.1 PLOT AND SUMMARY TO CHECK EVERYTHING IS BEING USED ####
+## ====   2.1 PLOT AND SUMMARY TO CHECK EVERYTHING IS BEING USED ####
 nrow(DNA)
 plot(France$geometry)
 plot(DNA$geometry,pch=16, cex=0.5, col="red",add=T)
@@ -279,7 +269,7 @@ plot(France$geometry,add=T)
 plot(myDetectors$main.detector.sf$geometry,add=T,col="red",pch=16,cex=0.1)
 
 
-# ==== 4. GENERATE HABITAT-LEVEL COVARIATES ====
+## ==== 4. GENERATE HABITAT-LEVEL COVARIATES ====
 ## ====   4.1 WOLF PRESENCE ====
 ## EXTRACT WOLF PERMANENT PRESENCE  IN EACH HABITAT CELL
 habitatGrid  <- sf::st_as_sf(stars::st_as_stars(template.rSpa), 
@@ -343,7 +333,7 @@ plot(habitatGrid[habitatGrid$layer>0,"IUCN"])
 
 habitatGrid$IUCN <- scale(habitatGrid$IUCN)
 
-## ====   4.4 PROPORTION OF FOREST ====
+## ====   4.2 PROPORTION OF FOREST ====
 # habitatSF.pol1 <- st_transform(habitatSF.pol, st_crs(CLCForest))
 # habitatSF.pol1$ID <- 1:nrow(habitatSF.pol1) 
 # 
@@ -362,7 +352,7 @@ habitatGrid$IUCN <- scale(habitatGrid$IUCN)
 # forest.r[which(!is.na(habitat.r[]))[cellForest$ID]] <- cellForest$propForestCell
 # plot(forest.r)
 # 
-# ## ====   4.5 PROPORTION OF GRASSLAND ====
+## ====   4.3 PROPORTION OF GRASSLAND ====
 # cellGrassland <- st_intersection(habitatSF.pol1 , CLCGrassland) %>%
 #   mutate(areaInter = st_area(.)) %>%
 #   group_by(ID) %>%
@@ -377,7 +367,7 @@ habitatGrid$IUCN <- scale(habitatGrid$IUCN)
 # grassland.r[which(!is.na(habitat.r[]))[cellGrassland$ID]] <- cellGrassland$propGrasslandCell
 # plot(grassland.r)
 # 
-# ## ====   4.6 PROPORTION OF Agri ====
+## ====   4.4 PROPORTION OF Agriculture ====
 # cellAgri<- st_intersection(habitatSF.pol1 , CLCAgri) %>%
 #   mutate(areaInter = st_area(.)) %>%
 #   group_by(ID) %>%
@@ -392,7 +382,7 @@ habitatGrid$IUCN <- scale(habitatGrid$IUCN)
 # Agri.r[which(!is.na(habitat.r[]))[cellAgri$ID]] <- cellAgri$propAgriCell
 # plot(Agri.r)
 # 
-# ## ====   4.7 PROPORTION OF human ====
+## ====   4.5 PROPORTION OF human ====
 # cellHum <- st_intersection(habitatSF.pol1 , CLCHum) %>%
 #   mutate(areaInter = st_area(.)) %>%
 #   group_by(ID) %>%
@@ -408,9 +398,10 @@ habitatGrid$IUCN <- scale(habitatGrid$IUCN)
 # plot(Hum.r)
 # save(grassland.r,forest.r,Hum.r,Agri.r, 
 # file=file.path(WD,"GISLayers","LandCoverRaster.RData"))
+## ====   4.6 LOAD ALREADY CALULATED LAYERS ====
 load(file.path(WD,"GISLayers","LandCoverRaster.RData"))
 
-## ====   4.4 BIND COVARIATES ====
+## ====   4.7 BIND COVARIATES ====
 habCovs <-  cbind(habitatGrid$IUCN[habitatGrid$layer>0],
                   Hum.r[!is.na(habitat.r[])],
                   grassland.r[!is.na(habitat.r[])],
@@ -932,7 +923,6 @@ model <- nimbleModel( code = modelCode,
                       calculate = F)
 model$calculate()
 model$initializeInfo()
-## ====   19.2 SOME CHECKS AND THE REST  ====
 cmodel <- compileNimble(model)
 MCMCconf <- configureMCMC(model = model,
                           monitors  = nimParams,
@@ -944,16 +934,18 @@ MCMC <- buildMCMC(MCMCconf)
 
 cMCMC <- compileNimble(MCMC, project = model, resetFunctions = TRUE)
 
-## Run MCMC
+## ====   19.1 RUN MCMC  ====
 MCMCRuntime <- system.time(samples <- runMCMC( mcmc = cMCMC,
                                                nburnin = 5000,
                                                niter = 37500,#run for longer# 500 iterations= 10 mins(M1, RAM= 64Go)
                                                nchains = 4,
                                                samplesAsCodaMCMC = TRUE))
+
+## ====     20.5.1 LOAD RESULTS #### 
 ### to access to full posterior, you can download them here: 
-#https://sdrive.cnrs.fr/s/oCPC6mdeNtemXjZ
-#Once loaded they can be loaded:
-load("C:/Personal_Cloud/OneDrive/Work/CNRS/SCR/Output/2025/s54_[W,Hum,Gras,Agri,F]sigma[sex]p0[reg[dpt1],geaco,snow,rds.indcov[prev,sex]2025LargeHab/Posteriors.RData")
+#https://sdrive.cnrs.fr/s/TLYsLpWpm5xcsM6
+#Once downloaded they can be loaded:
+# load("C:/Personal_Cloud/OneDrive/Work/CNRS/SCR/Output/2025/s54_[W,Hum,Gras,Agri,F]sigma[sex]p0[reg[dpt1],geaco,snow,rds.indcov[prev,sex]2025LargeHab/Posteriors.RData")
 load("Posteriors.RData")
 
 #process the nimbleoutput to get array of posteriors
@@ -996,7 +988,7 @@ quantile(NFrance, probs=c(0.025,0.975))
 ##2.5% 97.5% 
 ##989  1187
 
-## ====     20.5.5 P0 #### 
+## ====     20.5.2 P0 #### 
 det.r <- myDetectors$maindetector.r
 
 rdet1 <- det.rp0 <- rdet2 <- rdet3  <- raster(det.r) 
@@ -1039,7 +1031,7 @@ plot(myDetectors$main.detector.sf[,]$geometry,
      col=col[trapIntercept],cex=0.8,add=T,pch=16)
 
 
-## ====     20.5.2 SIGMA #### 
+## ====     20.5.3 SIGMA #### 
 par(mar=c(5,5,5,5))
 plot(-1000,xlim=c(0,3), ylim=c(0,5000),ylab="Sigma (m)",xlab="Sex",xaxt="n")
 axis(1,at=c(1:2),labels = c("F","M"))
@@ -1053,7 +1045,7 @@ plotBars(x=tmp,
          alpha1= 0.8
 )
 
-## ====     20.5.3 DETECTOR COVARIATE #### 
+## ====     20.5.4 DETECTOR COVARIATE #### 
 par(mar=c(5,5,5,5))
 plot(-1000,xlim=c(0,dim(trapCov)[2]+1), ylim=c(-1,1),ylab="BetaTraps",xlab="",xaxt="n")
 abline(h=0)
@@ -1071,7 +1063,7 @@ for(c in 1:dim(trapCov)[2]){
   )
 }
 
-## ====     20.5.4 DENSITY COVARIATE #### 
+## ====     20.5.5 DENSITY COVARIATE #### 
 par(mar=c(5,5,5,5))
 plot(-1000,xlim=c(0, dim(habCovs)[2]+1), ylim=c(-2,2),ylab="BetaHab",xlab="",xaxt="n")
 abline(h=0)

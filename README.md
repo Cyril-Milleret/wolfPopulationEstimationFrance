@@ -4,7 +4,7 @@ This repository contains all R code and data to reproduce the wolf population si
 Code and data are organized in folders to represent the updated population size estimation of the different winters.
 
 
-#2024 (winter 2023/24)
+### 2024 (winter 2023/24)
 
 Data and code to reproduce results presented in: 
 
@@ -13,7 +13,7 @@ Milleret, C., Duchamp, C. and Gimenez, O. 2025. Mise à jour des estimations dé
 Milleret, C., Duchamp, C., Bauduin, S., Kaerle, C., Pirog, A., Queney, G. and Gimenez, O. 2025. Estimating wolf population size in France using non-invasive genetic sampling and spatial capture recapture models. - ArXiv in press.
 
 
-#2025 (winter 2024/25)
+### 2025 (winter 2024/25)
 
 Data and code to reproduce results presented in: 
 
