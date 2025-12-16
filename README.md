@@ -6,7 +6,7 @@ The repository is organized by **winter season**, with each folder containing th
 
 Each yearly folder includes:
 - Raw and processed data
-- R scripts reproduce published results
+- R scripts to reproduce published results
 
 ---
 
