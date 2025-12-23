@@ -1,0 +1,1224 @@
+# R code to reproduce the analysis contained in the paper from Milleret et al.
+#Estimating wolf population size in France "using non-invasive genetic sampling and spatial capture recapture model
+
+rm(list=ls())
+#LOAD PACKAGES
+library(nimble)
+library(nimbleSCR)
+library(raster)
+library(sf)
+library(stars)
+library(terra)
+library(R.utils)
+library(basicMCMCplots)
+library(coda)
+library(tidyverse)
+library(RANN)
+
+## WORKING DIRECTORY & MODEL NAME
+# set your working directory here
+WD <- "C:/Personal_Cloud/OneDrive/Work/CNRS/Reports/GitHub/wolfPopulationEstimationFrance"
+
+### ==== 1. GENERAL VARIABLES DECLARATION ====
+myVars <- list(
+  # HABITAT SPECIFICATIONS
+  HABITAT = list(habBuffer = 20000),
+  
+  # NGS DATA SPECIFICATIONS
+  DATA = list( years = 2024,
+               sex = c("F","M"),                   
+               samplingMonths = list(11,12,1:3)), 
+  
+  # DETECTORS SPECIFICATIONS
+  DETECTORS = list( detSubResolution = 1000,
+                    detResolution = 5000
+  ),
+  
+  # DATA GENERATION
+  DETECTIONS = list(aug.factor = 4),
+
+  ## MISCELLANEOUS
+  plot.check = TRUE)
+
+years <- myVars$DATA$years
+nYears <- length(years)
+YEARS <- lapply(years, function(x)c(x,x+1))
+
+
+##source functions
+sourceDirectory(file.path(WD,"Functions"), modifiedOnly = FALSE)
+
+
+
+## ==== 1. LOAD DATA ####
+## ====  1.1 DNA DATA ####
+## ====   1.1.1 ALIVE DATA ####
+load(file.path(WD,"2024/Data/DNA.RData"))
+write.csv(DNA,file = file.path(WD,"2024/Data/DNA.csv"))
+## ====  1.2 GIS DATA ####
+## ====   1.2.1 10*10 km SAMPLING GRID #####
+grid1010 <- read_sf(file.path(WD,"2024","Data","Indices_biologiques_recolte_Hiver2021_2022_grid_10x10km_03102023.shp"))
+st_crs(DNA) <- st_crs(grid1010)
+## ====   1.2.2 EUROPE ####
+Europe <- read_sf(file.path(WD,"GISLayers","EuropeCountries"))
+##subset to neighboring countries 
+Europe <- Europe[Europe$NAME %in%c("France","Spain","Italy","Switzerland","Germany","Luxembourg","Belgium","Andorra","Monaco"),]
+Europe <- st_transform(Europe,crs = st_crs(DNA))
+## ====   1.2.3 FRANCE ####
+France <- Europe[Europe$NAME %in%c("France"),]
+France <- st_transform(France,crs = st_crs(DNA))
+plot(Europe$geometry)
+plot(DNA$geometry,add=T,col="red")
+
+## ====   1.2.4 DEPARTEMENT #####
+Departement <- read_sf(file.path(WD,"GISLayers","departements-20180101-shp","departements-20180101.shp"))
+Departement <- st_transform(Departement,crs = st_crs(DNA))
+
+plot(Departement$geometry,add=T)
+
+## ====   1.2.5 REGION #####
+Region <- read_sf(file.path(WD,"GISLayers","Region","regions_2015_metropole_region.shp"))
+Region <- st_set_crs(Region, 27572)#required to fix the issue with the projection
+
+Region <- st_transform(Region,crs = st_crs(DNA))
+
+plot(Region$geometry,add=T,col="red")
+
+
+
+## ====   1.2.6 LCIE WOLF DISTRIBUTION #####
+# DATA AND SCRIPT FROM MARRUCCO ET AL  
+iucn_2012_1 <- read_sf(file.path(WD,"GISLayers","LCIE_wolfDistribution","Wolf_LCIE_2012","Clip_2012_12_01_Wolves_permanent.shp"))
+iucn_2012_1$SPOIS <- 3
+iucn_2012_1 <- st_transform(iucn_2012_1, st_crs(DNA))
+plot(st_geometry(DNA))
+plot(st_geometry(iucn_2012_1), add = T, col = "lightskyblue4")
+
+iucn_2012_2 <- read_sf(file.path(WD,"GISLayers","LCIE_wolfDistribution","Wolf_LCIE_2012","Clip_2012_12_01_Wolves_sporadic.shp"))
+iucn_2012_2$SPOIS <- 1
+iucn_2012_2 <- st_transform(iucn_2012_2, st_crs(DNA))
+plot(st_geometry(iucn_2012_2), add = T, col = "lightskyblue2")
+
+
+iucn_2018 <- read_sf(file.path(WD,"GISLayers","LCIE_wolfDistribution","Wolf_LCIE_2018","2018_06_06_Wolf_IUCN_RedList.shp"))
+iucn_2018 <- st_transform(iucn_2018, st_crs(DNA))
+plot(st_geometry(DNA))
+plot(iucn_2018[ ,"SPOIS"], add = T)
+## Code back to numeric
+iucn_2018$SPOIS <- ifelse(iucn_2018$SPOIS == "Sporadic", 1, 3)
+
+## ====   1.2.7 EFFORT #####
+## ====     1.2.7.1 POTENTIAL Bauduin et al 2023 #####
+#LOAD GRID
+load(file.path(WD, "2024","Data","Effort","gridFr.RData"))
+EffortGrid <- st_as_sf(gridFr)
+EffortGrid <- st_transform(EffortGrid,crs = st_crs(DNA))
+#LOAD EFFORT VALUES FROM SARAH
+load(file.path(WD, "2024","Data","Effort","effort.RData"))
+#FILL IN EFFORT VALUE
+EffortGrid$value <- effort$eff_2020_2021
+#plot
+plot(EffortGrid["value"]$geometry)
+plot(EffortGrid["value"])
+plot(DNA$geometry,add=T,col="black")
+## ====     1.2.7.2 GEACO #####
+load(file.path(WD,"2024","Data/Geaco.RData"))
+mapview::mapview(Communes["n"],border=NA)
+
+## ====   1.2.8 SNOW #####
+load(file.path(WD,"2024","Data/SNOW.RData"))
+plot(SNOW)
+## ====   1.2.9 HUMAN DENSITY #####
+load(file.path(WD,"GISLayers/HumanDensity.RData"))
+
+plot(HumanDensity)
+#use focal to get an approx 10km resolution 
+plot(log(HumanDensity))
+plot(France$geometry,add=T)
+
+## ====   1.2.10 ROAD DENSITY #####
+load(file.path(WD,"GISLayers/roads.RData"))
+
+## ====   1.2.11 FOREST #####
+#Corinne land cover data should be downloaded https://land.copernicus.eu/en/products/corine-land-cover
+#Layers are not provided given their size 
+#CLC CLIPPED TO FRANCE IN QGIS
+# CLC_FR <- st_read(file.path("C:/Personal_Cloud/OneDrive/Work/CNRS/SCR","GIS","CLC","u2018_clc2018_v2020_20u1_fgdb","CLC_FR.shp"))
+# CLCForest <- CLC_FR[CLC_FR$Code_18 %in% c("311", "312", "313"),]
+# ## ====   1.2.12 GRASSLAND #####
+# CLCGrassland <- CLC_FR[CLC_FR$Code_18 %in% c("321", "322", "324"),]
+
+## ==== 2. Check NGS DATA ####
+barplot(table(DNA$Year))
+table(DNA$mois,DNA$Year)
+NDet <- tapply(DNA$Id, DNA$Id, length)
+mean(NDet)
+
+
+## ====     2.1 PLOT AND SUMMARY TO CHECK EVERYTHING IS BEING USED ####
+nrow(DNA)
+plot(France$geometry)
+plot(DNA$geometry,pch=16, cex=0.5, col="red",add=T)
+
+#MAKE A TABLE WITH SUMMARY OF DETECTIONS PER MONTHS AND SEXE
+matDets <- matrix(NA,nrow=4,ncol=6)
+colnames(matDets) <- c("Nov","Dec","Jan","Feb","Mar","Total")
+rownames(matDets) <- c("F","M","NI","Total")
+tab <- table(DNA$SEXE,DNA$mois)
+matDets[1:3,1:5]<- tab[c(2,3,1),c(4,5,1,2,3)]
+matDets[,"Total"] <- rowSums(matDets,na.rm=T)
+matDets["Total",] <- colSums(matDets,na.rm=T)
+
+apply(table(DNA$Id,DNA$SEXE),2,function(x) sum(x>0))
+
+
+## ==== 3. GENERATE HABITAT ====
+## ====   3.1 DEFINE AREA SEARCHED ====
+#BUFFER THE DETECTIONS TO FIND THE HABITAT
+areaSearched <- st_buffer(DNA,dist = 100000)
+areaSearched <- st_union(areaSearched)
+#REMOVE ALL AREAS OUTSIDE OF FRANCE (NOT SEARCHED)
+areaSearched <- st_intersection(areaSearched, France)
+areaSearched <- st_union(areaSearched)
+areaSearched <- st_as_sf(areaSearched)
+
+plot(areaSearched)
+
+
+## ====   3.2 DEFINE HABTIAT EXTENT ====
+#BUFFER AREA SEARCHED
+habitatExtent <- st_buffer(areaSearched,dist = myVars$HABITAT$habBuffer)
+habitatExtent <- st_union(habitatExtent)
+#REMOVE THE SEA FROM THE BUFFER
+habitatExtent <- st_intersection(habitatExtent, Europe)
+habitatExtent <- st_union(habitatExtent)
+habitatExtent <- st_as_sf(habitatExtent)
+plot(habitatExtent)
+plot(France$geometry,add=T)
+
+## ====   3.3 RASTERIZE HABITAT ====
+#BASE THE HABITAT ON THE 10*10 KM GRID USED FOR THE MONITORING 
+mat <- as.data.frame(cbind(st_coordinates(grid1010)[,c("X","Y")], rep(1,nrow(grid1010))))
+colnames(mat) <- c("x","y","z")
+mat[,c(1:2)] <- mat[,c(1:2)] - 5000## for some reasons the cells dont align; do it manually. 
+template.rSpa  <- rast(mat, type="xyz",crs=crs(DNA))# rasterFromXYZ(mat)
+template.rSpa <- crop(mask(template.rSpa,habitatExtent),habitatExtent)
+st_crs(template.rSpa) == st_crs(grid1010)
+
+#SOME SEARCHED GRID CELLS ARE OUTSIDE THE HABITAT (VERY LOW OVERLAP WITH HABITAT; DO NOT INCLUDE THEM)
+#keep habitat prop>50%
+template.rSpa <- rasterize(habitatExtent, template.rSpa, getCover=TRUE)        ## Add field=1 so its 1 for study area and NA for the rest.
+template.rSpa[template.rSpa < 50] <- 0
+template.rSpa[template.rSpa >= 50] <- 1
+
+template.r <- r <- raster(template.rSpa)
+
+#PLOT CHECK 
+plot(template.r)
+plot(grid1010$geometry,add=T)
+plot(France$geometry,add=T)
+plot(habitatExtent,add=T)
+plot(st_centroid(grid1010)$geometry,add=T,pch=16,cex=0.5)
+
+# STEP REQUIRED WHEN AGGREGATING THE HABITAT? 
+habitat.r <- template.r# habitat.r <- raster::rasterize(habitatExtent, template.r,crs=st_crs(DNA))
+##AGGREGATE HABITAT RESOLUTION TO 20KM ?
+habitat.r1 <- aggregate(habitat.r,fact=1)
+
+# GET THE HABITAT OBJECTS NECESSARY FOR NIMBLESCR
+habitatxy <- data.frame(raster::coordinates(habitat.r)[!is.na(habitat.r)[],])#,df=T)#[is.na(habitat.r[][,1]),]
+habitatxysf <- st_as_sf(habitatxy,coords = c("x", "y"), crs = st_crs(DNA))#double check the projection system
+habitatSF.pol <- sf::st_as_sf(stars::st_as_stars(habitat.r), 
+                              as_points = FALSE, merge = F)
+
+#PLOT CHECK 
+plot(habitat.r)
+plot(habitatxysf$geometry,add=T)
+plot(France$geometry,add=T)
+plot(DNA$geometry,add=T,pch=16,col="red")
+plot(grid1010$geometry,add=T,col=NA)
+#subset DNA samples falling outside habitat
+# idremoved <- raster::extract(habitat.r,DNA)
+# which(is.na(idremoved))
+
+## ====   3.4 DEFINE DETECTOR GRID ====
+detector.r <- rasterize(areaSearched, template.rSpa)
+#BASE THE DETECTOR GRID ON SUBDETECTORS
+subdetector.r <- disagg(detector.r, fact=10)#1km resolution for the PAB
+myDetectors <- MakeSearchGrid( subdetector.r=subdetector.r,
+                                 detResolution=myVars$DETECTORS$detResolution,
+                                 plot = F
+)
+myDetectors$detector.xy <- st_coordinates(myDetectors$main.detector.sf)
+colnames(myDetectors$detector.xy) <- c("x","y")
+
+#PLOT CHECK 
+plot(habitat.r)
+plot(France$geometry,add=T)
+plot(myDetectors$main.detector.sf$geometry,add=T,col="red",pch=16,cex=0.1)
+
+
+#CHECK THAT SUBDECTORS ALIGNS WITH MAIN DETECTORS 
+plot(habitat.r)
+myDetectors$detector.xy
+tmp <- myDetectors$main.detector.sf[myDetectors$main.detector.sf$main.cell.id%in%4835,]
+plot(tmp$geometry,add=T,pch=16)
+tmpsub <- myDetectors$detector.sf[myDetectors$detector.sf$main.cell.id%in%4835,]
+plot(tmpsub$geometry,add=T,col="red")
+## ==== 4. GENERATE HABITAT-LEVEL COVARIATES ====
+## ====   4.1 WOLF PRESENCE ====
+## EXTRACT WOLF PERMANENT PRESENCE  IN EACH HABITAT CELL
+habitatGrid  <- sf::st_as_sf(stars::st_as_stars(template.rSpa), 
+                    as_points = FALSE, merge = F)
+
+sizehabitatCell <- st_area(habitatGrid)[1]
+habitatGrid$id <- 1:nrow(habitatGrid)
+intersection <- st_intersection(habitatGrid, iucn_2012_1) %>%
+  mutate(iucn = st_area(.)) %>%
+  st_drop_geometry() %>%
+  group_by(id) %>%
+  summarise(IUCN = sum(iucn*SPOIS)/sizehabitatCell)
+  #summarise(IUCN = sum(SPOIS))
+
+habitatGrid <- habitatGrid %>%
+  left_join(intersection, by = "id")
+habitatGrid$IUCN[is.na(habitatGrid$IUCN)] <- 0
+plot(habitatGrid[,"IUCN"])
+
+## Extract LCIE wolf sporadic presence in each habitat grid cell
+intersection <- st_intersection(habitatGrid, iucn_2012_2) %>%
+  mutate(iucn = st_area(.)) %>%
+  st_drop_geometry() %>%
+  group_by(id) %>%
+  summarise(iucn_2 = sum(iucn*SPOIS)/sizehabitatCell)
+  #summarise(iucn_2 = sum(SPOIS))
+
+tmp <- habitatGrid %>%
+  left_join(intersection, by = "id")
+tmp$iucn_2[is.na(tmp$iucn_2)] <- 0
+habitatGrid$IUCN <- habitatGrid$IUCN + tmp$iucn_2
+plot(habitatGrid[,"IUCN"])
+
+## Extract LCIE wolf presence in each habitat grid cell
+intersection <- st_intersection(habitatGrid, iucn_2018) %>%
+  mutate(iucn = st_area(.)) %>%
+  st_drop_geometry() %>%
+  group_by(id) %>%
+  #summarise(iucn_2 = sum(SPOIS))
+  summarise(iucn_2 = sum(iucn*SPOIS)/sizehabitatCell)
+
+tmp <- habitatGrid %>%
+  left_join(intersection, by = "id")
+tmp$iucn_2[is.na(tmp$iucn_2)] <- 0
+
+habitatGrid$IUCN <- habitatGrid$IUCN + tmp$iucn_2
+plot(habitatGrid[,"IUCN"])
+
+habitatGrid$IUCN <- scale(habitatGrid$IUCN)
+
+## ====   4.2 HUMAN DENSITY ====
+habitatxysf1 <- st_transform(habitatxysf, st_crs(HumanDensity))
+HumanCov1 <- raster::extract( HumanDensity, 
+                             habitatxysf1,
+                             buffer=5800)#radius of 10km2 circle
+
+HumanCov <- unlist(lapply(HumanCov1,function(x) sum(x,na.rm=T)))
+plot(HumanDensity)
+#check if nas?
+sum(is.na(HumanCov))
+
+
+## ====   4.3 PROPORTION OF FOREST ====
+# habitatSF.pol1 <- st_transform(habitatSF.pol, st_crs(CLCForest))
+# habitatSF.pol1$ID <- 1:nrow(habitatSF.pol1)
+# 
+# cellForest <- st_intersection(habitatSF.pol1 , CLCForest) %>%
+#   mutate(areaInter = st_area(.)) %>%
+#   group_by(ID) %>%
+#   summarise(areaforestCell = sum(areaInter)) %>%
+#   mutate(propForestCell = areaforestCell / sizehabitatCell) %>%
+#   as_tibble() %>%
+#   select(ID, propForestCell)
+# 
+# #PLOT CHECK
+# forest.r <- habitat.r
+# forest.r[] <- 0
+# 
+# forest.r[which(!is.na(habitat.r[]))[cellForest$ID]] <- cellForest$propForestCell
+# plot(forest.r)
+
+## ====   4.4 PROPORTION OF GRASSLAND ====
+# cellGrassland <- st_intersection(habitatSF.pol1 , CLCGrassland) %>%
+#   mutate(areaInter = st_area(.)) %>%
+#   group_by(ID) %>%
+#   summarise(areaGrasslandCell = sum(areaInter)) %>%
+#   mutate(propGrasslandCell = areaGrasslandCell / sizehabitatCell) %>%
+#   as_tibble() %>%
+#   select(ID, propGrasslandCell)
+# #plot#check
+# grassland.r <- habitat.r
+# grassland.r[] <- 0
+# 
+# grassland.r[which(!is.na(habitat.r[]))[cellGrassland$ID]] <- cellGrassland$propGrasslandCell
+# plot(grassland.r)
+
+# save(grassland.r,forest.r, file=file.path(WD,"Data","ForestGrasslandRaster.RData"))
+load(file.path(WD,"2024","Data","ForestGrasslandRaster.RData"))
+
+
+## ====   4.5 BIND COVARIATES ====
+habCovs <-  cbind(habitatGrid$IUCN,
+                  log(HumanCov+0.0001),
+                  grassland.r[!is.na(habitat.r[])],
+                  forest.r[!is.na(habitat.r[])])
+#SCALE COVARIATES 
+habCovs <- scale(habCovs)
+colnames(habCovs) <- c(#"DEM",
+                       "Wolf","Human","Grassland","Forest")
+
+##PlotCheck
+tmp <- habitat.r
+for(i in 1:dim(habCovs)[2]){
+  tmp[!is.na(habitat.r[])] <- habCovs[,i]
+  plot(tmp,main=colnames(habCovs)[i])
+  plot(France$geometry,add=T)
+}
+
+## ==== 5. GENERATE DECTOR-LEVEL COVARIATES ====
+## ====   5.1 EFFORT ====
+## ====         5.1.1 SARAH
+id <- as.numeric(st_intersects(myDetectors$main.detector.sf, EffortGrid["value"]))
+myDetectors$main.detector.sf$effortCov <- EffortGrid$value[id]
+
+tmpr <- myDetectors$maindetector.r
+# id <- terra::extract(tmpr, myDetectors$main.detector.sf,cells=T)
+
+
+## if NA returns the average value of the cells within 20000m 
+isna <- which(is.na(myDetectors$main.detector.sf$effortCov))#, 1, function(x)any(is.na(x))))
+if(length(isna)>0){
+whichClose <- apply(st_distance(EffortGrid, myDetectors$main.detector.sf[isna, ]),2,function(x){order(x) [1:3]})
+for(i in 1:length(isna)){
+  myDetectors$main.detector.sf$effortCov[isna[i]] <- mean(EffortGrid$value[whichClose[,i]],na.rm=T)
+}
+}
+##check 
+tmpr[terra::extract(tmpr, myDetectors$main.detector.sf, cells=T)[,3]]<- myDetectors$main.detector.sf$effortCov
+ plot(tmpr)
+
+ ## ====         5.1.2 GEACO
+nbVisits <- 
+   Communes %>%  
+   # filter over the second condition
+   st_intersects(myDetectors$grid.poly, .)
+ 
+ 
+myDetectors$grid.poly$nbVisits <- 0
+ for(i in 1:nrow(myDetectors$grid.poly)){
+   myDetectors$grid.poly$nbVisits[i] <-  sum(Communes$n[nbVisits[[i]]])
+ }
+ 
+ # grid$nbHours <- 0
+ # for(i in 1:nrow(grid)){
+ #   grid$nbHours[i] <-  sum(Communes2021$sum[nbVisits[[i]]])
+ # }
+myDetectors$grid.poly$nbVisits[myDetectors$grid.poly$nbVisits>15] <- 15
+ #quick ckeck 
+mapview::mapview(list(myDetectors$grid.poly["nbVisits"],Communes["n"]))
+
+## ====   5.2 REGION ====
+Departement$id <- 1:nrow(Departement)
+tmpDis <- st_distance(myDetectors$main.detector.sf, st_simplify(Departement,dTolerance = 1000,preserveTopology = T))
+# tmpDis[500,]
+DetRegion <- 0
+for(i in 1:nrow(tmpDis)){
+  DetRegion[i] <- which.min(tmpDis[i,])
+}
+DetRegion <- apply(tmpDis, 1, which.min)
+
+table(DetRegion)
+centr <- st_centroid(Departement)$geometry
+text(st_coordinates(centr))
+
+Departement$code_insee[c(53,11,17,16,42,100,99,79,78,87,60)]
+Departement$code_insee[c(88,89,95,97,4,52,18,37)]
+Departement$code_insee[c(27,34,2,19,57,10,15,24,96,3,8,14,7,101,102,71,64,65,59)]
+
+inseRegion1 <- c("01","39","71","25","21","70","90","68","69D","69M","74","58","03","89","42")
+
+inseRegion2 <- c("07","63","43","26")
+
+#inseRegion2 <- c("26","05","84","04","13","83","06")
+inseRegion3 <- c("66","09","11","34","31","76","81","12","30","32","47",
+                 "48","43","15","63","19","46","82","71","84","13")
+
+
+DetRegion[DetRegion %in% which(Departement$code_insee %in%c(inseRegion1)) ] <- "A"
+DetRegion[DetRegion %in% which(Departement$code_insee %in%c(inseRegion2)) ] <- "Z"
+DetRegion[DetRegion %in% which(Departement$code_insee %in%c(inseRegion3)) ] <- "C"
+
+# DetRegion[DetRegion %in% which(Departement$code_insee %in%c("84","13")) ] <- "84"
+# DetRegion[DetRegion %in% which(Departement$code_insee %in%inseRegion2) ] <- "B"
+# DetRegion[DetRegion %in% which(Departement$code_insee %in%inseRegion3) ] <- "C"
+
+trapIntercept <- as.numeric(as.factor(DetRegion))
+plot(France$geometry)
+col <- rainbow(max(as.numeric(as.factor(DetRegion)))+5)
+plot(myDetectors$main.detector.sf$geometry,col=col[as.numeric(as.factor(DetRegion))+2])
+plot(Departement$geometry,add=T)
+text(st_coordinates(centr))
+mapview::mapview(Departement)
+
+## ====   5.3 SNOW ====
+snowCov <- raster::extract(SNOW, st_transform(myDetectors$main.detector.sf,crs = st_crs(SNOW)))
+
+## if NA returns the average value of the cells within 20000m 
+snowXY <- coordinates(SNOW) 
+snowXY <- st_as_sf(data.frame(snowXY), coords=c("x","y"), crs=st_crs(SNOW))
+
+isna <- which(is.na(snowCov))#, 1, function(x)any(is.na(x))))
+if(length(isna)>0){
+  whichClose <- apply(st_distance(snowXY, st_transform(myDetectors$main.detector.sf[isna, ],crs=st_crs(SNOW))),2,function(x){order(x) [1:8]})
+  for(i in 1:length(isna)){
+    snowCov[isna[i]] <- mean(SNOW[whichClose[,i]],na.rm=T)
+  }
+}
+
+##check 
+plot(tmpr)
+tmpr[!is.na(tmpr[])]<- snowCov
+plot(tmpr)
+
+
+
+## ====   5.4 ROADS ====
+roads <- focal(roads, matrix(1,3,3),mean,na.rm=T)
+# plot(Road.r)
+RoadCov <- terra::extract(roads, st_transform(myDetectors$main.detector.sf,crs = st_crs(roads)))
+isna <- which(is.na(RoadCov))#, 1, function(x)any(is.na(x))))
+
+
+roadXY <- coordinates(roads) 
+roadXY <- st_as_sf(data.frame(roadXY), coords=c("x","y"), crs=st_crs(roads))
+
+isna <- which(is.na(RoadCov))#, 1, function(x)any(is.na(x))))
+if(length(isna)>0){
+  whichClose <- apply(st_distance(roadXY, st_transform(myDetectors$main.detector.sf[isna, ],crs=st_crs(roads))),2,function(x){order(x) [1:8]})
+  for(i in 1:length(isna)){
+    RoadCov[isna[i]] <- mean(roads[whichClose[,i]],na.rm=T)
+  }
+}
+tmpr[!is.na(tmpr[])]<- RoadCov
+plot(tmpr)
+## ====   5.5 BIND COVARIATES ====
+trapCov <- scale(cbind(myDetectors$grid.poly$nbVisits , snowCov, log(RoadCov)))
+colnames(trapCov) <- c("Effort","Snow","Roads")
+
+cor(trapCov)
+
+##PlotCheck
+  tmp <- myDetectors$maindetector.r
+  for(i in 1:dim(trapCov)[2]){
+    tmp[!is.na(myDetectors$maindetector.r[])] <- trapCov[,i]
+    plot(tmp,main=colnames(trapCov)[i])
+    plot(France$geometry,add=T)
+    
+  }
+  
+  tmp[!is.na(myDetectors$maindetector.r[])] <- trapIntercept
+  plot(tmp,main="Region")
+  plot(France$geometry,add=T)
+
+
+
+## ==== 6. ASSIGN DETECTIONS TO DETECTORS ====
+DNA$Year <- DNA$saisonyear
+myData.alive <- AssignDetectors_v3sf( myData = DNA
+                                      ,                
+                                      myDetectors = myDetectors$main.detector.sf
+                                      ,
+                                      mysubDetectors = myDetectors$detector.sf
+                                      ,
+                                      radius = myVars$DETECTORS$detResolution)
+
+## ==== 7. MAKE Y ==== 
+y.ar <- MakeYsf( myData = myData.alive$myData.sp,
+                 myDetectors = myDetectors$main.detector.sf,
+                 method = "Binomial",
+                 returnIdvector = TRUE)
+
+## ==== 8. INDIVIDUAL COVARIATES ====
+## ====   8.1 SEX ====
+sex <- 0
+i=183
+for(i in 1:length(y.ar$Id.vector)){
+  tmp <- DNA[DNA$Id %in% y.ar$Id.vector[i],]
+  tmpsexe <- unique(tmp$SEXE)
+  #Check if id assign to all 4 categories, if yes, print id
+  if(length(tmpsexe)>2){print(i)}
+  #if NI get the sex from other samples
+  if(sum(tmpsexe%in% "NI")>0){
+  tmpsexe <- tmpsexe[!names(tmpsexe)%in% "NI"]
+  }
+  
+  if(length(tmpsexe)>1){
+   tabSexe <- table(tmp$SEXE)
+   #find most comon sexe
+   whichMostComon <- which(tabSexe>1)#[tabSexe>0]
+    if(length(whichMostComon)>0){
+      sex[i] <- tabSexe[whichMostComon]
+      #print(i)
+    }else{#assign sex to highest quality sample
+      sex[i] <-  tmp$SEXE[which.max(tmp$INDEX_CAL)]
+    }
+    
+  }
+   sex[i] <- tmpsexe[1]
+}
+sex[sex%in% "XX"] <- "F"
+sex[sex%in% "XY"] <- "M"
+#LET MODEL ASSIGN THE SEX OF THE INDIVIDUAL
+sex[sex%in% "NI"] <- NA
+sex[sex%in% "#N"] <- NA
+
+sex[sex%in% "F"] <- "0"
+sex[sex%in% "M"] <- "1"
+sex <- as.numeric(sex)
+#CHECK IT 
+table(sex,useNA="always")
+
+## ====   8.2 PREVIOUS DETECTION ====
+#check if individuals was detected during the previous years 3 years
+load(file.path(WD,"2024/Data/DNAAllPev.RData"))
+
+#SOME CHECKS 
+tab1 <- table(DNAAllPev$Id,DNAAllPev$saisonyear)
+whichDets <- apply(tab1,1,function(x) sum(x)>1)#ids detected at least during two winters previous to 2021-2023
+idGen <- names(whichDets)[whichDets]#unique(DNA1$GENOTYPE_TRANS)
+PrevDets <- as.numeric(y.ar$Id.vector %in% idGen)
+sum(PrevDets)/length(PrevDets)#PROPORTION OF IDS DETECTED THIS YEAR VS LAST YEAR
+
+#mean number of detections 
+mean(rowSums(y.ar$y.ar[y.ar$Id.vector %in% idGen,]))
+
+
+## ==== 9. CHECK PATTERNS OF INDIVIDUAL DETECTIONS ====
+distances <- CheckDistanceDetectionsV2sf( y = y.ar$y.ar, 
+                                         detector.xy = myDetectors$main.detector.sf, 
+                                         max.distance = 40000,
+                                         method = "pairwise",
+                                         plot.check = F)
+
+#EXLCUDE DETECTIONS OF INDIVIDUALS DOING "LARGE MOVEMENT" DURING THE SAMPLING. 
+  par(mfrow=c(1,1),mar=c(1,1,1,1))
+  if(sum(distances$y.flagged) > 0){
+    affected.ids <- which(apply(distances$y.flagged,1,sum)>0)
+    for(i in affected.ids){
+      plot(st_geometry(myDetectors$main.detector.sf),pch=16, cex=0.1)
+      plot(st_geometry(France), add = T,border="red")
+      
+      tmp <- DNA[DNA$Id == y.ar$Id.vector[i], ]
+      tmp <- tmp[order(tmp$date), ]
+      tmp.xy <- st_coordinates(tmp)
+      n.det <- nrow(tmp.xy)
+      
+      plot(st_geometry(tmp),add=T, col = "orange", pch = 16, cex = 1)
+      
+      arrows(x0 = tmp.xy[1:(n.det-1),1], y0 = tmp.xy[1:(n.det-1),2],
+             x1 = tmp.xy[2:n.det,1], y1 = tmp.xy[2:n.det,2], length = 0.1, lwd = 1,col="orange")
+      
+      plot(st_geometry(myDetectors$main.detector.sf[which(y.ar$y.ar[i,] > 0), ]), pch = 16, col = "red",add=T)
+      
+      tmp2 <- myDetectors$main.detector.sf[which(y.ar$y.ar[i,] > 0 & distances$y.flagged[i,] == 1), ]
+      plot(st_geometry(tmp2), col = "blue", pch = 13, cex = 1.5, lwd = 1,add=T)
+    }#i
+  }#if
+#if plot.check
+
+## ==== 10. DATA AUGMENTATION ====
+y.alive <- MakeAugmentation(y = y.ar$y.ar, aug.factor = myVars$DETECTIONS$aug.factor, replace.value = 0)
+SEX <- MakeAugmentation(y = sex, aug.factor = myVars$DETECTIONS$aug.factor, replace.value = NA)
+PrevDets <- MakeAugmentation(y = PrevDets, aug.factor = myVars$DETECTIONS$aug.factor, replace.value = NA)
+
+## ==== 11. PREPARE NIMBLE SCR OBJECTS ====
+## ====   11.1 SCALED DETECTORS ====
+ScaledDetectors <- scaleCoordsToHabitatGrid(coordsData = myDetectors$detector.xy,
+                                            coordsHabitatGridCenter = habitatxy,
+                                            scaleToGrid =T )
+
+## ====   11.2 GET WINDOW COORDINATES ====
+ScaledLowUpCoords <- getWindowCoords(scaledHabGridCenter = ScaledDetectors$coordsHabitatGridCenterScaled,
+                                     scaledObsGridCenter = ScaledDetectors$coordsDataScaled)
+
+
+habitat.mx <- ScaledLowUpCoords$habitatGrid 
+habitat.mx[habitat.mx[]>0]<-1
+
+## ====   11.3 GET LOCAL OBJECTS ====
+LocalDetectors <- getLocalObjects(habitatMask = habitat.mx,
+                                     coords = ScaledDetectors$coordsDataScaled,
+                                     dmax =  7,
+                                     resizeFactor = 1,
+                                     plot.check = TRUE
+)
+## ====   11.4 GET SPARSE OBJECTS ====
+ySparse <- getSparseY(y.alive)
+
+
+## ==== 12. DEFINE MODEL CODE ====
+modelCode <- nimbleCode({
+  ##---- SPATIAL PROCESS 
+  ## Prior for AC distribution parameter
+  for(i in 1:nhabCov){
+    habCoeffSlope[i] ~ dunif(-10,10)
+  }
+
+  habIntensity[1:numHabWindows] <- exp(habCovs[1:numHabWindows,1:nhabCov] %*% habCoeffSlope[1:nhabCov])
+  
+  sumHabIntensity <- sum(habIntensity[1:numHabWindows])
+  logHabIntensity[1:numHabWindows] <- log(habIntensity[1:numHabWindows])
+  logSumHabIntensity <- log(sumHabIntensity)
+  
+  ## AC distribution
+  for(i in 1:M){
+    sxy[i, 1:2] ~ dbernppAC(
+      lowerCoords = lowerHabCoords[1:numHabWindows, 1:2],
+      upperCoords = upperHabCoords[1:numHabWindows, 1:2],
+      logIntensities = logHabIntensity[1:numHabWindows],
+      logSumIntensity = logSumHabIntensity,
+      habitatGrid = habitatGrid[1:numGridRows,1:numGridCols],
+      numGridRows =  numGridRows,
+      numGridCols = numGridCols
+    )
+  }
+  
+  ##---- DEMOGRAPHIC PROCESS
+  ## Prior for data augmentation
+  psi ~ dunif(0,1)
+  probMale ~ dunif(0,1)
+  teta ~ dunif(0,1)
+  ## Data augmentation
+  for (i in 1:M){
+    z[i] ~ dbern(psi)
+     indCov[i,1] ~ dbern(teta)#prev dets
+     indCov[i,2] ~ dbern(probMale)#sex
+     
+
+  }
+  
+  ##---- DETECTION PROCESS
+  ## Priors for detection parameters
+  for(c in 1:nCovTraps){
+    betaTraps[c] ~ dunif(-5,5)
+  }
+  
+   sigma ~ dunif(0, 50)
+  
+  for(c in 1:nCounties){
+    p0[c] ~ dunif(0,0.50)
+  }
+  
+
+   for(c in 1:2){
+   indBetas[c] ~ dunif(-5,5)
+  }
+  
+  ## Detection process
+  for (i in 1:M){
+    y[i, 1:lengthYCombined] ~  dbinomLocal_normalCovsis(size = trials[1:n.traps],
+                                                      p0Traps = p0[1:nCounties],
+                                                      sigma = sigma,
+                                                      s = sxy[i,1:2],
+                                                      trapCoords = trapCoords[1:n.traps,1:2],
+                                                      localTrapsIndices = trapIndex[1:n.cells,1:maxNBDets],
+                                                      localTrapsNum = nTraps[1:n.cells],
+                                                      resizeFactor = ResizeFactor,
+                                                      habitatGrid = habitatIDDet[1:y.maxDet,1:x.maxDet],
+                                                      indicator = z[i],
+                                                      lengthYCombined = lengthYCombined,
+                                                      allowNoLocal = 0,
+                                                      trapCovs =  trapCov[1:n.traps,1:nCovTraps],
+                                                      trapCovsIntercept =  trapIntercept[1:n.traps],
+                                                      trapBetas = betaTraps[1:nCovTraps],
+                                                       indCov = indCov[i,1:2],
+                                                       indBetas = indBetas[1:2]
+                                                      
+    )
+    
+  }
+  
+  ##---- DERIVED QUANTITIES
+  ## Number of individuals in the population
+  N <- sum(z[1:M])
+  
+  #density
+  dens[1:numHabWindows] <- calculateDensity(s=sxy[1:M,1:2],
+                                            habitatGrid = habitatGrid[1:numGridRows,1:numGridCols],
+                                            indicator = z[1:M],
+                                            numWindows = numHabWindows,
+                                            nIndividuals = M )
+  #get N within the french border
+  for(i in 1:numHabWindowsFR){
+    densFr[i] <-  dens[HabWindowsFr[i]]
+  }
+  NFrance <- sum(densFr[1:numHabWindowsFR])
+  
+  
+})
+## ==== 13. INITIAL VALUES ====
+## ====   13.1 Z ====
+z <- ifelse(apply(y.alive, 1,sum)>0,1,NA)
+z <- z
+zinits <- ifelse(!is.na(z),NA,rbinom(sum(is.na(z)),1,0.5))
+
+## ====   13.2 SEX ====
+sexInits <- ifelse(!is.na(SEX),NA,rbinom(sum(is.na(SEX)),1,0.5))
+PrevDetsInits <- ifelse(!is.na(PrevDets),NA,rbinom(sum(is.na(PrevDets)),1,0.5))
+
+## ====   13.3 S ====
+#IDENTIFY THE AUGMENTED IDS
+idAugmented <- which(names(z) %in% "Augmented")
+
+#sxy 
+xy <- st_coordinates(myData.alive$myData.sp)# cbind(myData.alive$myData.sp$x, myData.alive$myData.sp$y)
+colnames(xy) <- c("x","y")
+ScaledCoords <- scaleCoordsToHabitatGrid(coordsData =  xy,
+                                            coordsHabitatGridCenter = habitatxy,
+                                            scaleToGrid =T )
+myData.alivetmp <- myData.alive$myData.sp
+myData.alivetmp$x <- ScaledCoords$coordsDataScaled[,1]
+myData.alivetmp$y <- ScaledCoords$coordsDataScaled[,2]
+ 
+ 
+#ADD A FAKE YEAR TO GET getSInits TO WORK
+tmp1 <- myData.alivetmp[1:10,]
+tmp1$Year <- as.numeric(tmp1$Year) +1
+
+# GET INITIAL SXY VALUES 
+sxy.init <- getSInits( AllDetections = rbind(myData.alivetmp,tmp1),
+                       Id.vector = y.ar$Id.vector,
+                       idAugmented = idAugmented,
+                       lowerCoords = as.matrix(ScaledLowUpCoords$lowerHabCoords),
+                       upperCoords = as.matrix(ScaledLowUpCoords$upperHabCoords),
+                       habitatGrid = ScaledLowUpCoords$habitatGrid,
+                       intensity = NULL,
+                       sd = 4,
+                       movementMethod = "dbernppACmovement_normal"
+                       
+)
+
+
+# get the cells that in France to extract abundance. 
+load(file.path(WD,2024,"Data",
+               paste("cellInFrance", ".RData", sep = "")))
+
+## ====   13.4 SOTHER INITS VALUES ====
+nimInits <- list( "sxy" = sxy.init[,,1],
+                  "z" = zinits,
+                  "sigma" = runif(1,1,1.1),
+                  "habCoeffSlope" = runif(dim(habCovs)[2],-0.1,0.1),#[CM]#0,
+                  "p0" = runif(max(trapIntercept),0.2,0.4),#array(runif(max(trapIntercept),0.2,0.4),c(max(trapIntercept),2)),#[CM]rep(0,dim(detCovs)[3]),
+                  "betaTraps"  = runif(dim(trapCov)[2], 0.4, 0.5),
+                  "psi" = runif(1,0.4,0.5),#,
+                  "probMale"= runif(1,0.4,0.5),
+                  "teta" = runif(1,0.4,0.5),
+                  "indCov" = cbind(PrevDetsInits,sexInits),
+                  "indBetas" = runif(2,0.2,0.3)
+)
+
+## ==== 14. NIMDATA ====
+nimData <- list(y = ySparse$yCombined[,,1],
+                  trapCov = trapCov,
+                  habCovs = habCovs,
+                  z = z,
+                  indCov = cbind(PrevDets,SEX),
+                  trapIntercept = trapIntercept
+                  )
+
+## ==== 15. NIMCONSTANTS ====
+nimConstants <- list( M = dim(ySparse$yCombined)[1],
+                      nhabCov= dim(nimData$habCovs)[2],
+                      numHabWindows = dim(ScaledLowUpCoords$upperHabCoords)[1],
+                      nCounties = max(trapIntercept),
+                      habitatGrid = ScaledLowUpCoords$habitatGrid,
+                      numGridRows = dim(ScaledLowUpCoords$habitatGrid)[1],
+                      numGridCols = dim(ScaledLowUpCoords$habitatGrid)[2],
+                      lowerHabCoords = as.matrix(ScaledLowUpCoords$lowerHabCoords),
+                      upperHabCoords = as.matrix(ScaledLowUpCoords$upperHabCoords),
+                      y.maxDet = dim(LocalDetectors$habitatGrid)[1],
+                      x.maxDet = dim(LocalDetectors$habitatGrid)[2],
+                      ResizeFactor = LocalDetectors$resizeFactor,
+                      n.cells = dim(LocalDetectors$localIndices)[1],
+                      maxNBDets = LocalDetectors$numLocalIndicesMax,
+                      trapIndex = LocalDetectors$localIndices,
+                      nTraps = LocalDetectors$numLocalIndices,
+                      habitatIDDet = LocalDetectors$habitatGrid,
+                      lengthYCombined = ySparse$lengthYCombined,
+                      trials = myData.alive$n.trials[[1]],
+                      trapCoords = ScaledDetectors$coordsDataScaled,
+                      n.traps=dim(ScaledDetectors$coordsDataScaled)[1],
+                      nCovTraps=dim(trapCov)[2],
+                      HabWindowsFr = cellInFrance,
+                      numHabWindowsFR = length(cellInFrance)
+)
+  
+## ==== 16. BUILD AND FIT MODEL  ====
+## ==== 17. NIMPARAMETERS  ====
+nimParams <- c("N","sigma","psi",
+               "p0", "habCoeffSlope","betaTraps","teta","probMale","indBetas","NFrance")
+# SAVE LESS ITERATIONS FOR AC LOCAITON AND INDIVIDUAL STATES
+nimParams2 <- c("sxy","z")
+
+## ==== 18. SAVE MODEL  ====
+
+
+## ==== 19. BUILD AND FIT MODEL  ====
+## ====   19.1 BUILD AND CACULATE  ====
+model <- nimbleModel( code = modelCode,
+                      constants = nimConstants,
+                      data = nimData,
+                      inits = nimInits,
+                      check = F,
+                      calculate = F)
+model$calculate()
+model$initializeInfo()
+## ====   19.2 SOME CHECKS AND THE REST  ====
+cmodel <- compileNimble(model)
+MCMCconf <- configureMCMC(model = model,
+                          monitors  = nimParams,
+                          control = list(reflective = TRUE),
+                          monitors2= nimParams2,
+                          thin2 = 10,
+                          thin = 1)
+MCMC <- buildMCMC(MCMCconf)
+
+cMCMC <- compileNimble(MCMC, project = model, resetFunctions = TRUE)
+
+## Run MCMC
+MCMCRuntime <- system.time(samples <- runMCMC( mcmc = cMCMC,
+                                               nburnin = 100,
+                                               niter = 500,#run for longer# 500 iterations= 10 mins(M1, RAM= 64Go)
+                                               nchains = 2,
+                                               samplesAsCodaMCMC = TRUE))
+### to access to full posterior, you can download them here: 
+#https://sdrive.cnrs.fr/s/oCPC6mdeNtemXjZ
+#Once loaded they can be loaded:
+load("Posteriors.RData")
+
+#process the nimbleoutput to get array of posteriors
+myResults <- ProcessCodaOutput(samples$samples,params.omit = c("sxy","z"))
+myResultsSZ <- ProcessCodaOutput(samples$samples2,params.omit = c("sxy","z"))
+
+
+#check convergence 
+#CHECK RHAT
+myResults$Rhat
+# visual check convergence of parameters 
+basicMCMCplots::chainsPlot(samples$samples,var=c("N","betaTraps[1]" ,"betaTraps[2]","betaTraps[3]",  "habCoeffSlope[1]",
+                                                 "habCoeffSlope[2]","habCoeffSlope[3]" ,"habCoeffSlope[4]" ,"indBetas[1]","indBetas[2]"))
+
+basicMCMCplots::chainsPlot(samples$samples,var=c("p0[1]", "p0[2]", "p0[3]", "p0[4]",  "p0[5]",
+                                                 "p0[6]", "p0[7]", "p0[8]", "p0[9]",  "probMale",
+                                                 "psi", "sigma", "teta"))
+
+
+# Extract abundance only within the french boundary
+# Compile function to do it outside of nimble model from sxy and z
+CcalculateDensity <- compileNimble(calculateDensity)
+
+dens <- list()
+NFrance <- 0
+#loop through each iterations
+for(i in 1:dim(myResultsSZ$sims.list$sxy)[1]){
+dens[[i]] <- CcalculateDensity(s = myResultsSZ$sims.list$sxy[i, ,], 
+                                            habitatGrid = nimConstants$habitatGrid, 
+                                            indicator = myResultsSZ$sims.list$z[i, ], numWindows = nimConstants$numHabWindows,
+                                            nIndividuals = nimConstants$M)  
+NFrance[i] <-  sum(dens[[i]][nimConstants$HabWindowsFr])
+}
+
+## abundance estimates
+mean(NFrance)
+quantile(NFrance, probs=c(0.025,0.975))
+
+
+
+## reproduce figures ##
+hab.r <- habitat.r
+det.r <- detector.r
+
+###map covariates###
+r1 <- r2 <- r3 <- r4 <- hab.r 
+r1[!is.na(hab.r)] <- nimData$habCovs[,1] 
+r2[!is.na(hab.r)] <- nimData$habCovs[,2] 
+r3[!is.na(hab.r)] <- nimData$habCovs[,3] 
+r4[!is.na(hab.r)] <- nimData$habCovs[,4] 
+
+
+box <- st_as_sfc(st_bbox(r1))
+#remove corisca
+gg <- st_cast(France,"POLYGON")
+gg$area <- st_area(gg) 
+gg <- gg[order(gg$area,decreasing = T),]
+#plot france 
+plot(gg[1,]$geometry,col=grey(0.8))
+#add legend 
+#### HABITAT 
+par(mfrow=c(2,2),mar=c(1,1,1,1.5))
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(r1,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Historical presence")
+
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(r2,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Human")
+
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(r3,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Low natural vegetation")
+
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(r4,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Forest")
+
+####DETECTORS 
+det.r <- myDetectors$maindetector.r
+habitat.pol <- sf::st_as_sf(stars::st_as_stars(hab.r), 
+                            as_points = FALSE, merge = F)
+rdet1 <- det.rp0 <- rdet2 <- rdet3  <- raster(det.r) 
+rdet1[!is.na(rdet1[])] <- nimData$trapCov[,1] 
+rdet2[!is.na(rdet1[])]  <- nimData$trapCov[,2] 
+rdet3[!is.na(rdet1[])] <- nimData$trapCov[,3] 
+
+# pdf(file="C:/Personal_Cloud/OneDrive/Work/CNRS/Papers/SCRWolfFrance/Figure/FigureS1DetCov.pdf",width = 9,height = 8)
+par(mfrow=c(2,2),mar=c(1,1,1,1.5))
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(rdet1,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Effort")
+
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(rdet2,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Snow")
+
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(rdet3,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Roads")
+# dev.off()
+
+
+###########p0####
+## ====     20.5.5 P0 #### 
+# pdf(file="C:/Personal_Cloud/OneDrive/Work/CNRS/Papers/SCRWolfFrance/Figure/FigureS3P0.pdf",width = 9,height = 6)
+det.rp0[!is.na(rdet1[])]  <- nimData$trapIntercept
+det.pol <- sf::st_as_sf(stars::st_as_stars(det.rp0), 
+                        as_points = FALSE, merge = F)
+det.pol <- det.pol %>%    group_by(layer) %>%summarize()
+
+nregions <- dim(myResults$sims.list$p0)[2]
+par(mfrow=c(1,2),mar=c(5,5,0.5,1))
+plot(-1000,xlim=c(0, nregions+1), ylim=c(0,0.02),ylab="p0",xlab="Region",xaxt="n")
+regNames <- 0
+
+for(c in 1:nregions){
+  regNames[c] <- DetRegion[which(trapIntercept %in% c)[1]]
+  
+  #axis(1, at=c(1:dim(habCovs)[2]), labels = colnames(habCovs) )
+  tmp <- myResults$sims.list$p0[,]
+  col <- viridis::viridis(nregions)# c("red","blue","green4","purple")
+  plotBars(x=tmp[,c],
+           at = c,
+           quantile = c(0.0275, 0.975),
+           quantile1 = c(0.25, 0.75),
+           widthBar = 0.25,
+           col = col[c],alpha= 0.5,
+           alpha1= 0.8
+  )
+}
+
+labels <- Departement$code_insee[as.numeric(regNames)]
+labels[labels%in% NA] <- c("A","B","C")
+# axis(1, at=c(1:nregions), labels = labels )
+axis(1, at=c(1:nregions), labels = c(1:nregions) )
+
+#PLOT REGIONS 
+par(mar=c(0,1,1,0))
+
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(det.pol$geometry,col=adjustcolor(col[det.pol$layer],alpha.f = 0.8),cex=0.3,add=T,pch=16,border=col[det.pol$layer])
+text(x=st_coordinates(st_centroid(det.pol))[,1],
+     y=st_coordinates(st_centroid(det.pol))[,2],det.pol$layer,col=grey(1),font=2)
+
+
+####DETECTORS 
+det.r <- myDetectors$maindetector.r
+habitat.pol <- sf::st_as_sf(stars::st_as_stars(hab.r), 
+                            as_points = FALSE, merge = F)
+rdet1 <- det.rp0 <- rdet2 <- rdet3  <- raster(det.r) 
+rdet1[!is.na(rdet1[])] <- nimData$trapCov[,1] 
+rdet2[!is.na(rdet1[])]  <- nimData$trapCov[,2] 
+rdet3[!is.na(rdet1[])] <- nimData$trapCov[,3] 
+
+# pdf(file="C:/Personal_Cloud/OneDrive/Work/CNRS/Papers/SCRWolfFrance/Figure/FigureS2DetCov.pdf",width = 9,height = 8)
+par(mar=c(1,1,1,1.5))
+plot(box,border=NA)
+plot(gg[1,]$geometry,col=grey(0.8),add=T)
+plot(rdet1,axes=F,box=F,col=map.pal("viridis",100),add=T)
+mtext("Effort")
+
+
+
+## ====     20.5.2 SIGMA #### 
+par(mar=c(5,5,5,5))
+plot(-1000,xlim=c(0,3), ylim=c(0,5000),ylab="Sigma (m)",xlab="Sex",xaxt="n")
+axis(1,at=c(1:2),labels = c("F","M"))
+tmp <- myResults$sims.list$sigma*res(habitat.r)[1]
+plotBars(x=tmp,
+         at = 1,
+         quantile = c(0.0275, 0.975),
+         quantile1 = c(0.25, 0.75),
+         widthBar = 0.1,
+         col = "red",alpha= 0.5,
+         alpha1= 0.8
+)
+
+## ====     20.5.3 DETECTOR COVARIATE #### 
+par(mar=c(5,5,5,5))
+plot(-1000,xlim=c(0,dim(trapCov)[2]+1), ylim=c(-1,1),ylab="BetaTraps",xlab="",xaxt="n")
+abline(h=0)
+axis(1,at=c(1:dim(trapCov)[2]),labels = colnames(trapCov))
+tmp <- myResults$sims.list$betaTraps
+col <- c("red","blue","green4")
+for(c in 1:dim(trapCov)[2]){
+  plotBars(x=tmp[,c],
+           at = c,
+           quantile = c(0.0275, 0.975),
+           quantile1 = c(0.25, 0.75),
+           widthBar = 0.1,
+           col = col[c],alpha= 0.5,
+           alpha1= 0.8
+  )
+}
+
+## ====     20.5.4 DENSITY COVARIATE #### 
+par(mar=c(5,5,5,5))
+plot(-1000,xlim=c(0, dim(habCovs)[2]+1), ylim=c(-2,2),ylab="BetaHab",xlab="",xaxt="n")
+abline(h=0)
+
+
+axis(1, at=c(1:dim(habCovs)[2]), labels = colnames(habCovs) )
+tmp <- myResults$sims.list$habCoeffSlope
+col <- c("red","blue","green4","purple")
+for(c in 1:dim(habCovs)[2]){
+  plotBars(x=tmp[,c],
+           at = c,
+           quantile = c(0.0275, 0.975),
+           quantile1 = c(0.25, 0.75),
+           widthBar = 0.1,
+           col = col[c],alpha= 0.5,
+           alpha1= 0.8
+  )
+}
+
+## ====     20.5.5 P0 #### 
+nregions <- dim(myResults$sims.list$p0)[2]
+par(mfrow=c(1,2),mar=c(5,5,0.5,1))
+plot(-1000,xlim=c(0, nregions+1), ylim=c(0,0.06),ylab="p0",xlab="Region",xaxt="n")
+regNames <- 0
+for(c in 1:nregions){
+  regNames[c] <- DetRegion[which(trapIntercept %in% c)[1]]
+  
+  #axis(1, at=c(1:dim(habCovs)[2]), labels = colnames(habCovs) )
+  tmp <- myResults$sims.list$p0[,]
+  col <- viridis::viridis(nregions)# c("red","blue","green4","purple")
+  plotBars(x=tmp[,c],
+               at = c,
+               quantile = c(0.0275, 0.975),
+               quantile1 = c(0.25, 0.75),
+               widthBar = 0.2,
+               col = col[c],alpha= 0.5,
+               alpha1= 0.8
+  )
+}
+
+labels <- Departement$code_insee[as.numeric(regNames)]
+labels[labels%in% NA] <- c("A","B","C")
+axis(1, at=c(1:nregions), labels = labels )
+
+#PLOT REGIONS 
+plot(st_geometry(habitatExtent))
+plot(st_geometry(France),add=T)
+plot(myDetectors$main.detector.sf[,]$geometry,col=col[trapIntercept],cex=0.3,add=T,pch=16)
+
+  
+## ====     20.5.6 PROB DETECTED  #### 
+par(mfrow=c(1,1),mar=c(5,5,0.5,1))
+plot(-1000,xlim=c(0, 2), ylim=c(0,1),
+     ylab="teta",
+     xlab="",
+     xaxt="n")
+tmp <- myResults$sims.list$teta
+col <- c("red","blue","green4")
+plotBars(x=tmp,
+         at = 1,
+         quantile = c(0.0275, 0.975),
+         quantile1 = c(0.25, 0.75),
+         widthBar = 0.2,
+         col = col[1],alpha= 0.5,
+         alpha1= 0.8
+)
+## ====     20.5.7 EFFECT PREV DETE ON DETECTION  #### 
+plot(-1000,xlim=c(0, 2), ylim=c(-1,1),
+     ylab="IndCov(PrevCovs)",
+     xlab="",
+     xaxt="n")
+abline(h=0)
+tmp <- myResults$sims.list$indBetas
+col <- c("red","blue","green4")
+plotBars(x=tmp[,1],
+         at = 1,
+         quantile = c(0.0275, 0.975),
+         quantile1 = c(0.25, 0.75),
+         widthBar = 0.2,
+         col = col[1],alpha= 0.5
+)
+
+## ====     20.5.8 PROB MALE #### 
+par(mfrow=c(1,1),mar=c(5,5,0.5,1))
+plot(-1000,xlim=c(0, 2), ylim=c(0,1),
+     ylab="probMale",
+     xlab="",
+     xaxt="n")
+tmp <- myResults$sims.list$probMale
+col <- c("red","blue","green4")
+plotBars(x=tmp,
+         at = 1,
+         quantile = c(0.0275, 0.975),
+         quantile1 = c(0.25, 0.75),
+         widthBar = 0.2,
+         col = col[1],alpha= 0.5,
+         alpha1= 0.8
+)
+## ====     20.5.9 EFFECT OF SEX ON P0#### 
+plot(-1000,xlim=c(0, 2), ylim=c(-1,1),
+     ylab="IndCov(sex)",
+     xlab="",
+     xaxt="n")
+abline(h=0)
+tmp <- myResults$sims.list$indBetas
+col <- c("red","blue","green4")
+plotBars(x=tmp[,2],
+         at = 1,
+         quantile = c(0.0275, 0.975),
+         quantile1 = c(0.25, 0.75),
+         widthBar = 0.2,
+         col = col[1],alpha= 0.5
+)
+

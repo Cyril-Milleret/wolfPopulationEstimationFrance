@@ -32,7 +32,7 @@ Data and code to reproduce results presented in:
 **Milleret, C., Duchamp, D., Vandel, J.-M., & Gimenez, O. (2025)**  
 *Mise à jour des estimations démographiques et des effectifs de la population de loups en France lors de l’hiver 2024/2025.*  
 OFB / CEFE-CNRS. 24 pages.  
-Available at: https://www.loupfrance.fr/
+Available at: https://hal.science/hal-05417020 
 
 ---
 
