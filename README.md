@@ -39,5 +39,5 @@ Available at: https://hal.science/hal-05417020
 ## 🔁 Reproducibility
 
 All analyses are fully reproducible using the scripts and data provided in this repository. 
-Large GIS layers are not provided, but source location to download them is provided. Exact coordinate locations of the detections have been replaced by the center location of the closest detector. For more information, please contact theDGPT service of the OFB. 
+Large GIS layers are not provided, but source location to download them is provided. Exact coordinate locations of the detections have been replaced by the center location of the closest detector. For more information, please contact the DGPT service of the OFB. 
 Sensitive personal information have been masked when present. 

@@ -20,7 +20,7 @@ library(readxl)
 
 ## WORKING DIRECTORY & MODEL NAME
 # set your working directory here
-WD <- "C:/Personal_Cloud/OneDrive/Work/CNRS/Reports/GitHub/wolfPopulationEstimationFrance1"
+WD <- "C:/Personal_Cloud/OneDrive/Work/CNRS/Reports/GitHub/wolfPopulationEstimationFrance"
 myVars <- list(
   # HABITAT SPECIFICATIONS
   HABITAT = list( habResolution = 10000,

@@ -17,7 +17,7 @@ library(RANN)
 
 ## WORKING DIRECTORY & MODEL NAME
 # set your working directory here
-WD <- "C:/Personal_Cloud/OneDrive/Work/CNRS/Reports/GitHub/wolfPopulationEstimationFrance1"
+WD <- "C:/Personal_Cloud/OneDrive/Work/CNRS/Reports/GitHub/wolfPopulationEstimationFrance"
 
 ### ==== 1. GENERAL VARIABLES DECLARATION ====
 myVars <- list(
